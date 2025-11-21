@@ -1,30 +1,82 @@
 name: Qodana
+
 on:
   workflow_dispatch:
   pull_request:
   push:
-    branches: # Specify your branches here
-      - main # The 'main' branch
-      - 'releases/*' # The release branches
+    branches:
+      - main
+      - 'releases/*'
 
 jobs:
-  qodana:
+  # -------------------------
+  # 1. BUILD OPENSSL + MAKE compile_commands.json
+  # -------------------------
+  build-openssl:
+    name: Build OpenSSL & generate compile_commands.json
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential perl bear
+
+      - name: Configure OpenSSL
+        run: |
+          ./Configure linux-x86_64
+
+      - name: Build with BEAR (generate compile_commands.json)
+        run: |
+          bear -- make -j"$(nproc)"
+
+      - name: Move compile_commands.json into build directory
+        run: |
+          mkdir -p build
+          mv compile_commands.json build/
+
+      - name: Upload compile_commands.json as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-commands
+          path: build/compile_commands.json
+
+  # -------------------------
+  # 2. RUN QODANA (after build)
+  # -------------------------
+  qodana:
+    name: Qodana Scan
+    runs-on: ubuntu-latest
+    needs: build-openssl
     permissions:
       contents: write
       pull-requests: write
       checks: write
+
     steps:
       - uses: actions/checkout@v3
         with:
-          ref: ${{ github.event.pull_request.head.sha }}  # to check out the actual pull request commit, not the merge commit
-          fetch-depth: 0  # a full history is required for pull request analysis
-      - name: 'Qodana Scan'
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Download compile_commands.json artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: compile-commands
+          path: build
+
+      - name: Qodana Scan
         uses: JetBrains/qodana-action@v2025.2
         with:
           args: |
-              --image,jetbrains/qodana-clang:2025.2-eap,
-              #--compile-commands,<path-to-compile_commands.json>
+            --image,jetbrains/qodana-clang:2025.2-eap,
+            --compile-commands,build/compile_commands.json
           pr-mode: false
         env:
           QODANA_TOKEN: ${{ secrets.QODANA_TOKEN_1304135027 }}
